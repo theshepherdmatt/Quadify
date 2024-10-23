@@ -103,8 +103,10 @@ function check_buttons_and_update_leds() {
 }
 
 function handleButtonPress(button_id) {
-    if (button_id === 6) {
-        restartOLEDService();
+    if (button_id === 7) {
+        addToFavouritesViaWebSocket();  // Button 7 adds the current track to Favourites
+    } else if (button_id === 8) {
+        restartOLEDService();  // Button 8 restarts the OLED service
     } else {
         executeCommand(getCommandForButton(button_id));
     }
@@ -114,19 +116,48 @@ function handleButtonPress(button_id) {
     control_leds(led_state);
 }
 
+
+function addToFavouritesViaWebSocket() {
+    const socket = require('socket.io-client')('http://volumio.local:3000');  // Adjust the host if needed
+
+    socket.on('connect', function() {
+        console.log('Connected to Volumio WebSocket');
+        socket.emit('getState');  // Get current state to retrieve track info
+
+        socket.on('pushState', function(data) {
+            const trackUri = data.uri;  // Get the currently playing track URI
+            if (trackUri) {
+                socket.emit('addToFavourites', {
+                    service: 'mpd',
+                    uri: trackUri
+                });
+                console.log(`Track added to Favourites: ${trackUri}`);
+            } else {
+                console.log('No track currently playing');
+            }
+        });
+    });
+
+    socket.on('disconnect', function() {
+        console.log('Disconnected from Volumio WebSocket');
+    });
+}
+
+
 function getCommandForButton(buttonId) {
     switch (buttonId) {
         case 1: return "play";
         case 2: return "pause";
         case 3: return "previous";
         case 4: return "next";
-        case 5: return "random";
-        case 6: return ""; // Button 6 is handled separately for restarting the service
-        case 7: return "repeat";
-        case 8: return "";
+        case 5: return "repeat";
+        case 6: return "random";
+        case 7: return "";  // Button 7 is handled separately for playing the Favourites playlist
+        case 8: return "";  // Button 8 is handled separately for restarting the OLED service
         default: return "";
     }
 }
+
 
 function updatePlayPauseLEDs() {
     exec("volumio status", (error, stdout, stderr) => {

@@ -21,14 +21,16 @@ const opts = {
 
 var DRIVER;
 var extn_exit_sleep_mode = false;
-var currentMode = 'clock'; // Define currentMode globally
+this.currentMode = 'clock'; // Define as a property of the class
+
+const OLED = new APOled(opts, TIME_BEFORE_CLOCK, TIME_BEFORE_SCREENSAVER, TIME_BEFORE_DEEPSLEEP);
 
 // Run both buttonsleds.js and rotary.js on startup
 console.log("Starting scripts...");
 runButtonsLedsScript(); // Start buttons and LEDs script
-runRotaryScript(); // Start rotary script
+runRotaryScript(OLED); // Start rotary script
 
-const OLED = new APOled(opts, TIME_BEFORE_CLOCK, TIME_BEFORE_SCREENSAVER, TIME_BEFORE_DEEPSLEEP);
+
 var logo_start_display_time = 0;
 
 OLED.driver.begin(() => {
@@ -49,12 +51,18 @@ function start_app() {
         }
         setTimeout(() => {
             OLED.driver.fullRAMclear(() => {
-                OLED.clock_mode();
-                OLED.listen_to("volumio", 1000);
+                if (OLED.currentMode === 'clock') {
+                    OLED.clock_mode();
+                }
+                if (OLED.currentMode !== 'playlist') {
+                    // Only start listening to Volumio if not in playlist mode
+                    OLED.listen_to("volumio", 1000);
+                }
             });
         }, time_remaining);
     });
 }
+
 
 function exitcatcher(options) {
     if (options.cleanup) OLED.driver.turnOffDisplay();

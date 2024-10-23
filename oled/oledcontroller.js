@@ -4,7 +4,6 @@ const fonts = require('./fonts');
 const REFRESH_TRACK = 20;
 let api_state_waiting = false;
 let extn_exit_sleep_mode = false;
-let currentMode = 'clock';
 
 class APOledController {
     constructor(opts, timeBeforeClock, timeBeforeScreensaver, timeBeforeDeepSleep) {
@@ -36,7 +35,8 @@ class APOledController {
         this.refresh_action = null;
         this.driver = new APOled(opts);
         this.dimmed = false;
-        this.pause_to_clock_timeout = null; // Add this line
+        this.pause_to_clock_timeout = null;
+        this.currentMode = 'clock'; // Define currentMode as a property of the class
     }
 
     // Import methods for different modes
@@ -60,7 +60,6 @@ class APOledController {
 
     listen_to(api, frequency) {
         frequency = frequency || 1000;
-        let api_caller = null;
 
         console.log(`Listening to ${api} with frequency ${frequency}ms`);
 
@@ -68,7 +67,7 @@ class APOledController {
             const io = require('socket.io-client');
             const socket = io.connect('http://localhost:3000');
 
-            api_caller = setInterval(() => {
+            setInterval(() => {
                 if (api_state_waiting) return;
                 api_state_waiting = true;
                 socket.emit("getState");
@@ -89,18 +88,18 @@ class APOledController {
                 }
                 api_state_waiting = false;
 
-                if (data.status === "play" && currentMode !== "playback") {
+                if (data.status === "play" && this.currentMode !== "playback") {
                     this.playback_mode(); // Switch to playback mode when playback starts
-                    currentMode = "playback";
-                } else if (data.status !== "play" && currentMode !== "clock") {
-                    currentMode = "clock";
+                    this.currentMode = "playback";
+                } else if (data.status !== "play" && this.currentMode !== "clock" && this.currentMode !== "playlist") {
+                    this.currentMode = "clock";
                     if (this.page !== "clock") {
                         // Delay before switching to clock mode
                         if (!this.pause_to_clock_timeout) {
                             this.pause_to_clock_timeout = setTimeout(() => {
-                                if (this.data.status !== "play") {
+                                if (this.data.status !== "play" && this.currentMode !== "playlist") {
                                     this.clock_mode(); // Switch to clock mode
-                                    currentMode = "clock";
+                                    this.currentMode = "clock";
                                     this.pause_to_clock_timeout = null;
                                 }
                             }, 60000); // Delay for 1 minute
@@ -162,22 +161,55 @@ class APOledController {
         }
     }
 
-    deep_sleep() {
-        console.log('Entering deep sleep mode...');
-        // Add logic to turn off the display or reduce its brightness significantly
-        this.driver.turnOffDisplay();
-    }
-
+    forceMode(newMode) {
+        console.log(`Forcing mode change to: ${newMode}`);
+        
+        // Clear any active interval to stop ongoing display updates
+        if (this.update_interval) {
+            clearInterval(this.update_interval);
+            this.update_interval = null;
+        }
+    
+        // Update the current mode and execute the relevant actions
+        this.currentMode = newMode;
+    
+        switch (newMode) {
+            case "playlist":
+                if (this.playlistManager) {
+                    this.playlistManager.startPlaylistMode();
+                } else {
+                    console.error("PlaylistManager not defined.");
+                }
+                break;
+            case "clock":
+                this.clock_mode();
+                break;
+            case "playback":
+                this.playback_mode();
+                break;
+            default:
+                console.log("Unknown mode set.");
+        }
+    }   
+    
+    
     handle_sleep(exit_sleep) {
-        if (!exit_sleep) { // Should the display go into sleep mode?
-            if (!this.iddle_timeout) { // Check if the screen is not already waiting to go into sleep mode (instruction initiated in a previous cycle).
+        if (this.currentMode === "playlist") {
+            // Never sleep during playlist mode
+            return;
+        }
+    
+        if (!exit_sleep) {
+            if (!this.iddle_timeout) {
                 let _deepsleep_ = () => { this.deep_sleep(); }
                 let _screensaver_ = () => {
-                    this.screensaver_mode();
-                    this.iddle_timeout = setTimeout(_deepsleep_, this.TIME_BEFORE_DEEPSLEEP);
+                    if (this.currentMode !== "playlist") { // Don't activate screensaver if in Playlist Mode
+                        this.screensaver_mode();
+                        this.iddle_timeout = setTimeout(_deepsleep_, this.TIME_BEFORE_DEEPSLEEP);
+                    }
                 }
                 let _clock_ = () => {
-                    if (currentMode !== "playback") {
+                    if (this.currentMode !== "playlist" && this.currentMode !== "playback") { // Don't switch to clock if in Playlist or Playback Mode
                         this.clock_mode();
                     }
                     this.iddle_timeout = setTimeout(_screensaver_, this.TIME_BEFORE_SCREENSAVER);
@@ -189,23 +221,23 @@ class APOledController {
                 this.status_off = null;
                 this.driver.turnOnDisplay();
             }
-
-            if (this.page !== "playback" && currentMode === "playback") {
+    
+            if (this.page !== "playback" && this.currentMode === "playback") {
                 this.playback_mode();
             }
-
+    
             if (this.iddle_timeout) {
                 clearTimeout(this.iddle_timeout);
                 this.iddle_timeout = null;
             }
-
-            if (this.data.status === "pause") {
+    
+            if (this.data.status === "pause" && this.currentMode !== "playlist") {
                 // Set a timeout to switch to clock mode after a minute if still paused
                 if (!this.pause_to_clock_timeout) {
                     this.pause_to_clock_timeout = setTimeout(() => {
-                        if (this.data.status === "pause") {
+                        if (this.data.status === "pause" && this.currentMode !== "playlist") {
                             this.clock_mode();
-                            currentMode = "clock";
+                            this.currentMode = "clock";
                         }
                         this.pause_to_clock_timeout = null;
                     }, 60000); // 1 minute
@@ -218,7 +250,7 @@ class APOledController {
                 }
             }
         }
-    }
+    }      
 }
 
 module.exports = APOledController;

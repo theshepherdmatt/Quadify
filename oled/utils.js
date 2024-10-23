@@ -1,6 +1,3 @@
-
-// utils.js
-
 function runButtonsLedsScript() {
     console.log("Running buttonsleds.js script...");
     // If buttonsleds.js doesn't require any arguments and can be run as a separate process

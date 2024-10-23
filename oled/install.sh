@@ -86,17 +86,20 @@ EOL
     log_message "${GREEN}Startup Indicator LED Service has been created, enabled, and started.${NC}"
 }
 
+# -------------------------------------------------------------------
 # Function to install the remote script
-install_remote_script() {
-    log_message "${YELLOW}Running the remote install script...${NC}"
-    if [ -f "$(pwd)/../remote/install.sh" ]; then
-        (cd ../remote && bash install.sh >> $LOG_FILE 2>> $LOG_FILE)
-        log_message "${GREEN}Remote install script executed successfully.${NC}"
-    else
-        log_message "${RED}Remote install script not found!${NC}"
-        exit 1
-    fi
-}
+# Commented out to remove remote installation
+# -------------------------------------------------------------------
+# install_remote_script() {
+#     log_message "${YELLOW}Running the remote install script...${NC}"
+#     if [ -f "$(pwd)/../remote/install.sh" ]; then
+#         (cd ../remote && bash install.sh >> $LOG_FILE 2>> $LOG_FILE)
+#         log_message "${GREEN}Remote install script executed successfully.${NC}"
+#     else
+#         log_message "${RED}Remote install script not found!${NC}"
+#         exit 1
+#     fi
+# }
 
 # Start the installation with a bit of flair
 log_message "${GREEN}Quadify's audiophile installation is tuning up...${NC}"
@@ -127,8 +130,11 @@ sudo systemctl restart oled
 # Set up the Startup Indicator LED Service
 setup_startup_indicator_service
 
+# -------------------------------------------------------------------
 # Install the remote script
-install_remote_script
+# Commented out to remove remote installation
+# -------------------------------------------------------------------
+# install_remote_script
 
 log_message "${GREEN}The Quadify Dac is set, Happy Listening!!${NC}"
 

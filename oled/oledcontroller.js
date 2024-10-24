@@ -1,3 +1,4 @@
+// oledcontroller.js (modified to restore deep sleep behavior)
 const APOled = require('./oled');
 const fonts = require('./fonts');
 
@@ -36,6 +37,7 @@ class APOledController {
         this.driver = new APOled(opts);
         this.dimmed = false;
         this.pause_to_clock_timeout = null;
+        this.iddle_timeout = null;
         this.currentMode = 'clock'; // Define currentMode as a property of the class
     }
 
@@ -89,6 +91,7 @@ class APOledController {
                 api_state_waiting = false;
 
                 if (data.status === "play" && this.currentMode !== "playback") {
+                    console.log("Switching to playback mode...");
                     this.playback_mode(); // Switch to playback mode when playback starts
                     this.currentMode = "playback";
                 } else if (data.status !== "play" && this.currentMode !== "clock" && this.currentMode !== "playlist") {
@@ -96,8 +99,10 @@ class APOledController {
                     if (this.page !== "clock") {
                         // Delay before switching to clock mode
                         if (!this.pause_to_clock_timeout) {
+                            console.log("Setting timeout to enter clock mode after 1 minute pause...");
                             this.pause_to_clock_timeout = setTimeout(() => {
                                 if (this.data.status !== "play" && this.currentMode !== "playlist") {
+                                    console.log("Switching to clock mode after pause.");
                                     this.clock_mode(); // Switch to clock mode
                                     this.currentMode = "clock";
                                     this.pause_to_clock_timeout = null;
@@ -110,6 +115,7 @@ class APOledController {
                 if (this.data.title !== data.title ||
                     this.data.artist !== data.artist ||
                     this.data.album !== data.album) {
+                    console.log("Track information changed, updating display...");
                     this.text_to_display = data.title + (data.artist ? " - " + data.artist : "");
                     this.driver.CacheGlyphsData(this.text_to_display);
                     this.text_width = this.driver.getStringWidthUnifont(this.text_to_display + " - ");
@@ -120,6 +126,7 @@ class APOledController {
                 }
 
                 if (this.data.volume !== data.volume) {
+                    console.log("Volume changed, updating display...");
                     exit_sleep = true;
                 }
 
@@ -163,94 +170,124 @@ class APOledController {
 
     forceMode(newMode) {
         console.log(`Forcing mode change to: ${newMode}`);
-        
         // Clear any active interval to stop ongoing display updates
         if (this.update_interval) {
             clearInterval(this.update_interval);
             this.update_interval = null;
         }
-    
         // Update the current mode and execute the relevant actions
         this.currentMode = newMode;
-    
         switch (newMode) {
             case "playlist":
                 if (this.playlistManager) {
+                    console.log("Entering playlist mode...");
                     this.playlistManager.startPlaylistMode();
                 } else {
                     console.error("PlaylistManager not defined.");
                 }
                 break;
             case "clock":
+                console.log("Entering clock mode...");
                 this.clock_mode();
                 break;
             case "playback":
+                console.log("Entering playback mode...");
                 this.playback_mode();
                 break;
+            case "screensaver":
+                console.log("Entering screensaver mode...");
+                this.screensaver_mode();
+                break;
             default:
-                console.log("Unknown mode set.");
+                console.error("Unknown mode set: " + newMode);
         }
     }   
-    
-    
+
     handle_sleep(exit_sleep) {
+        console.log(`Handling sleep: exit_sleep=${exit_sleep}, currentMode=${this.currentMode}`);
         if (this.currentMode === "playlist") {
-            // Never sleep during playlist mode
+            console.log("In playlist mode, skipping sleep handling.");
             return;
         }
-    
+
         if (!exit_sleep) {
             if (!this.iddle_timeout) {
-                let _deepsleep_ = () => { this.deep_sleep(); }
+                console.log("Setting up sleep timeouts for clock, screensaver, and deep sleep.");
+                let _deepsleep_ = () => { 
+                    console.log("Timeout reached, entering deep sleep...");
+                    this.deep_sleep(); 
+                }
                 let _screensaver_ = () => {
-                    if (this.currentMode !== "playlist") { // Don't activate screensaver if in Playlist Mode
-                        this.screensaver_mode();
-                        this.iddle_timeout = setTimeout(_deepsleep_, this.TIME_BEFORE_DEEPSLEEP);
+                    if (this.currentMode !== "playlist" && this.currentMode !== "playback") { // Don't activate screensaver if in Playlist or Playback Mode
+                        console.log("Timeout reached, entering screensaver mode...");
+                        this.forceMode("screensaver");
+                        // Directly call deep_sleep without forceMode to prevent conflict
+                        console.log("Setting timeout for deep sleep...");
+                        this.iddle_timeout = setTimeout(() => {
+                            console.log("Entering deep sleep directly from screensaver...");
+                            this.deep_sleep();
+                        }, this.TIME_BEFORE_DEEPSLEEP);
                     }
                 }
                 let _clock_ = () => {
                     if (this.currentMode !== "playlist" && this.currentMode !== "playback") { // Don't switch to clock if in Playlist or Playback Mode
-                        this.clock_mode();
+                        console.log("Timeout reached, entering clock mode...");
+                        this.forceMode("clock");
                     }
+                    console.log("Setting screensaver timeout...");
                     this.iddle_timeout = setTimeout(_screensaver_, this.TIME_BEFORE_SCREENSAVER);
                 }
+                console.log("Setting clock mode timeout...");
                 this.iddle_timeout = setTimeout(_clock_, this.TIME_BEFORE_CLOCK);
             }
         } else {
             if (this.status_off) {
+                console.log("Turning on display from sleep mode...");
                 this.status_off = null;
                 this.driver.turnOnDisplay();
             }
-    
+
             if (this.page !== "playback" && this.currentMode === "playback") {
+                console.log("Switching to playback mode...");
                 this.playback_mode();
             }
-    
+
             if (this.iddle_timeout) {
+                console.log("Clearing idle timeout.");
                 clearTimeout(this.iddle_timeout);
                 this.iddle_timeout = null;
             }
-    
+
             if (this.data.status === "pause" && this.currentMode !== "playlist") {
-                // Set a timeout to switch to clock mode after a minute if still paused
+                console.log("Paused, setting timeout to switch to clock mode after 1 minute.");
                 if (!this.pause_to_clock_timeout) {
                     this.pause_to_clock_timeout = setTimeout(() => {
                         if (this.data.status === "pause" && this.currentMode !== "playlist") {
-                            this.clock_mode();
-                            this.currentMode = "clock";
+                            console.log("Switching to clock mode after pause.");
+                            this.forceMode("clock");
                         }
                         this.pause_to_clock_timeout = null;
                     }, 60000); // 1 minute
                 }
             } else if (this.data.status === "play" || this.data.status === "stop") {
-                // Clear the pause to clock timeout if the status changes
                 if (this.pause_to_clock_timeout) {
+                    console.log("Clearing pause to clock timeout.");
                     clearTimeout(this.pause_to_clock_timeout);
                     this.pause_to_clock_timeout = null;
                 }
             }
         }
     }      
+
+    deep_sleep() {
+        console.log("Entering deep sleep state...");
+        // Implementation for deep sleep mode (e.g., turning off display, reducing power)
+        if (this.update_interval) {
+            clearInterval(this.update_interval);
+            this.update_interval = null;
+        }
+        this.driver.turnOffDisplay();
+    }
 }
 
 module.exports = APOledController;

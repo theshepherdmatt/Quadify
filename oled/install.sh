@@ -1,105 +1,292 @@
 #!/bin/bash
 set -e
 
-# Color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# ============================
+#   Color Code Definitions
+# ============================
+RED='\033[0;31m'        # Red
+GREEN='\033[0;32m'      # Green
+YELLOW='\033[1;33m'     # Yellow
+BLUE='\033[0;34m'       # Blue
+CYAN='\033[0;36m'       # Cyan
+MAGENTA='\033[0;35m'    # Magenta
+NC='\033[0m'            # No Color
 
-# Log file for detailed installation messages
-LOG_FILE="install_details.log"
+# ============================
+#   Log File Definition
+# ============================
+LOG_FILE="/home/volumio/Quadify/oled/install_details.log"
 
-# Function to log messages
+# ============================
+#   Log Message Function
+# ============================
 log_message() {
-    local message=$1
-    echo -e "$message" | tee -a "$LOG_FILE"
+    local type="$1"
+    local message="$2"
+    case "$type" in
+        "info")
+            echo -e "${BLUE}[INFO]${NC} $message"
+            ;;
+        "success")
+            echo -e "${GREEN}[SUCCESS]${NC} $message"
+            ;;
+        "warning")
+            echo -e "${YELLOW}[WARNING]${NC} $message"
+            ;;
+        "error")
+            echo -e "${RED}[ERROR]${NC} $message" >&2
+            ;;
+        "highlight")
+            echo -e "${MAGENTA}$message${NC}"
+            ;;
+        *)
+            echo -e "[UNKNOWN] $message"
+            ;;
+    esac
 }
 
-# Function to check if the script is run as root
+# ============================
+#   ASCII Art Banner Function
+# ============================
+banner() {
+    echo -e "${MAGENTA}"
+    echo "  ___  _   _   _    ____ ___ _______   __"
+    echo " / _ \| | | | / \  |  _ \_ _|  ___\ \ / /"
+    echo "| | | | | | |/ _ \ | | | | || |_   \ V / "
+    echo "| |_| | |_| / ___ \| |_| | ||  _|   | |  "
+    echo " \__\_\\___/_/   \_\____/___|_|     |_|  "
+    echo -e "${NC}"
+}
+
+# ============================
+#   Spinner Function
+# ============================
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
+
+# ============================
+#   Prompt User Function
+# ============================
+prompt_user() {
+    local message="$1"
+    local response
+    while true; do
+        read -rp "$(echo -e "${CYAN}$message [y/n]: ${NC}")" response
+        case "$response" in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo -e "${YELLOW}Please answer yes or no.${NC}";;
+        esac
+    done
+}
+
+# ============================
+#   Check for Root Privileges
+# ============================
 check_root() {
     if [ "$EUID" -ne 0 ]; then
-        log_message "${YELLOW}Please run as root or use sudo.${NC}"
+        log_message "warning" "Please run as root or use sudo."
         exit 1
     fi
 }
 
-# Function to install build essentials and set up compilers
+# ============================
+#   Install Build Essentials
+# ============================
 install_build_essentials() {
-    log_message "${YELLOW}Installing build essentials and setting up compilers...${NC}"
+    log_message "info" "Installing build essentials and setting up compilers..."
     
-    # Run the updated build script
-    bash Workaround_BuildEssentials.sh >> "$LOG_FILE" 2>&1
-    
-    log_message "${GREEN}Build essentials installed and compilers set to gcc-8/g++-8.${NC}"
+    # Verify Workaround_BuildEssentials.sh exists
+    if [ -f "/home/volumio/Quadify/oled/Workaround_BuildEssentials.sh" ]; then
+        bash /home/volumio/Quadify/oled/Workaround_BuildEssentials.sh >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
+        log_message "success" "Build essentials installed successfully."
+    else
+        log_message "error" "Workaround_BuildEssentials.sh not found at /home/volumio/Quadify/oled/. Please ensure the file exists."
+        exit 1
+    fi
 }
 
-# Function to install Node.js and npm using NodeSource
+# ============================
+#   Install Node.js and npm
+# ============================
 install_node_and_npm() {
-    log_message "${YELLOW}Installing Node.js and npm...${NC}"
+    log_message "info" "Installing Node.js and npm..."
     if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-        log_message "${GREEN}Node.js and npm are already installed.${NC}"
+        log_message "success" "Node.js and npm are already installed."
     else
-        # Add NodeSource repository for the latest Node.js
-        curl -fsSL https://deb.nodesource.com/setup_14.x | bash - >> "$LOG_FILE" 2>&1
-        apt-get install -y nodejs >> "$LOG_FILE" 2>&1
+        # Add NodeSource repository
+        curl -fsSL https://deb.nodesource.com/setup_14.x | bash - >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
+        
+        # Install Node.js
+        apt-get install -y nodejs >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
         
         # Verify installation
         if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-            log_message "${GREEN}Node.js and npm installed successfully.${NC}"
+            log_message "success" "Node.js and npm installed successfully."
         else
-            log_message "${RED}Failed to install Node.js and npm.${NC}"
+            log_message "error" "Failed to install Node.js and npm."
             exit 1
         fi
     fi
 }
 
-# Function to install dependencies for Volumio with audiophile elegance
-install_dep_volumio() {
-    log_message "${YELLOW}Installing dependencies for Volumio...${NC}"
-    if apt-get install -y build-essential raspberrypi-kernel-headers libffi-dev libssl-dev >/dev/null 2>&1; then
-        log_message "${GREEN}Essential Volumio dependencies installed successfully.${NC}"
-    else
-        log_message "${YELLOW}Failed to install some dependencies. Attempting workaround...${NC}"
-        if bash Workaround_BuildEssentials.sh >> "$LOG_FILE" 2>&1; then
-            log_message "${GREEN}Workaround executed successfully.${NC}"
-        else
-            log_message "${RED}Workaround failed. Cannot proceed.${NC}"
-            exit 1
-        fi
-    fi
-}
-
-# Function to install Node.js dependencies using package.json
+# ============================
+#   Install Dependencies
+# ============================
 install_dependencies() {
-    log_message "${YELLOW}Installing Node.js dependencies from package.json...${NC}"
+    log_message "info" "Installing Node.js dependencies from package.json..."
+    
+    # Navigate to project directory
+    cd /home/volumio/Quadify/oled || { log_message "error" "Project directory not found."; exit 1; }
     
     # Ensure package.json exists
     if [ ! -f package.json ]; then
-        log_message "${YELLOW}No package.json found. Initializing a new one...${NC}"
-        npm init -y >> "$LOG_FILE" 2>&1
+        log_message "warning" "No package.json found. Initializing a new one..."
+        npm init -y >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
     fi
     
-    # Clean npm cache to prevent corrupted installations
+    # Clean npm cache
     npm cache clean --force >> "$LOG_FILE" 2>&1
     
-    # Remove existing node_modules and package-lock.json for a clean install
+    # Remove existing node_modules and package-lock.json
     rm -rf node_modules package-lock.json
     
     # Install dependencies
-    npm install >> "$LOG_FILE" 2>&1
+    npm install >> "$LOG_FILE" 2>&1 &
+    pid=$!
+    spinner $pid
+    wait $pid
     
-    # Optionally, update all packages to their latest versions
-    log_message "${YELLOW}Updating all Node.js modules to their latest versions...${NC}"
-    npm update >> "$LOG_FILE" 2>&1
+    # Update dependencies
+    log_message "info" "Updating all Node.js modules to their latest versions..."
+    npm update >> "$LOG_FILE" 2>&1 &
+    pid=$!
+    spinner $pid
+    wait $pid
+    
+    log_message "success" "Node.js dependencies installed and updated successfully."
 }
 
-# Function to create and enable the Startup Indicator LED Service
+# ============================
+#   Configure SPI
+# ============================
+configure_spi() {
+    log_message "info" "Configuring SPI settings..."
+    
+    # Enable SPI in /boot/userconfig.txt
+    echo "dtparam=spi=on" | tee -a /boot/userconfig.txt > /dev/null
+    
+    # Load spi-dev module
+    echo "spi-dev" | tee -a /etc/modules > /dev/null
+    
+    # Optionally set SPI buffer size
+    if [ ! -f "/etc/modprobe.d/spidev.conf" ] || ! grep -q 'bufsiz=8192' /etc/modprobe.d/spidev.conf; then
+        echo "options spidev bufsiz=8192" | tee -a /etc/modprobe.d/spidev.conf > /dev/null
+    fi
+    
+    log_message "success" "SPI settings configured."
+}
+
+# ============================
+#   Configure I2C
+# ============================
+configure_i2c() {
+    log_message "info" "Configuring I2C settings..."
+    
+    # Enable I2C in /boot/userconfig.txt
+    echo "dtparam=i2c_arm=on" | tee -a /boot/userconfig.txt > /dev/null
+    
+    # Load i2c-dev module
+    echo "i2c-dev" | tee -a /etc/modules > /dev/null
+    
+    # Install i2c-tools
+    apt-get install -y i2c-tools >> "$LOG_FILE" 2>&1 &
+    pid=$!
+    spinner $pid
+    wait $pid
+    
+    # Add 'volumio' user to 'i2c' group
+    log_message "info" "Adding 'volumio' user to 'i2c' group..."
+    usermod -aG i2c volumio
+    log_message "success" "'volumio' user added to 'i2c' group."
+    
+    log_message "success" "I2C settings configured."
+}
+
+# ============================
+#   Verify I2C Devices
+# ============================
+verify_i2c() {
+    log_message "info" "Verifying I2C configuration and detecting devices..."
+    
+    # Detect I2C devices on bus 1
+    sudo i2cdetect -y 1 | tee -a "$LOG_FILE"
+    
+    # Check if any devices are detected
+    DEVICE_COUNT=$(sudo i2cdetect -y 1 | grep -E '^[0-9a-fA-F]' | grep -v '--' | wc -l)
+    
+    if [ "$DEVICE_COUNT" -gt 0 ]; then
+        log_message "success" "I2C devices detected successfully."
+    else
+        log_message "warning" "No I2C devices detected. Please check your connections and device addresses."
+    fi
+}
+
+# ============================
+#   Verify spi_binding Module
+# ============================
+verify_spi_binding() {
+    log_message "info" "Verifying the presence of spi_binding module..."
+    if [ -f "/home/volumio/Quadify/oled/node_modules/pi-spi/build/Release/spi_binding.node" ]; then
+        log_message "success" "spi_binding module found successfully."
+    else
+        log_message "warning" "spi_binding module is missing. Attempting to rebuild pi-spi..."
+        cd /home/volumio/Quadify/oled || { log_message "error" "Project directory not found."; exit 1; }
+        npm rebuild pi-spi >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
+        
+        if [ -f "/home/volumio/Quadify/oled/node_modules/pi-spi/build/Release/spi_binding.node" ]; then
+            log_message "success" "spi_binding module rebuilt successfully."
+        else
+            log_message "error" "Failed to rebuild spi_binding module. Please check the logs for details."
+            exit 1
+        fi
+    fi
+}
+
+# ============================
+#   Setup Systemd Services
+# ============================
 setup_startup_indicator_service() {
-    log_message "${YELLOW}Setting up the Startup Indicator LED Service...${NC}"
+    log_message "info" "Setting up the Startup Indicator LED Service..."
     
     if systemctl list-unit-files | grep -q 'startup-indicator.service'; then
-        log_message "${GREEN}Startup Indicator LED Service already exists. Reloading and restarting...${NC}"
+        log_message "success" "Startup Indicator LED Service already exists. Reloading and restarting..."
         systemctl daemon-reload
         systemctl restart startup-indicator.service
     else
@@ -127,21 +314,31 @@ EOL
         systemctl daemon-reload
 
         # Enable the service to start on boot
-        systemctl enable startup-indicator.service
+        systemctl enable startup-indicator.service >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
 
         # Start the service
-        systemctl start startup-indicator.service
+        systemctl start startup-indicator.service >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
 
-        log_message "${GREEN}Startup Indicator LED Service has been created, enabled, and started.${NC}"
+        log_message "success" "Startup Indicator LED Service has been created, enabled, and started."
     fi
 }
 
-# Function to set up the OLED service
 setup_oled_service() {
-    log_message "${YELLOW}Setting up the OLED Display Service...${NC}"
+    log_message "info" "Setting up the OLED Display Service..."
     
-    # Create the systemd service file
-    tee /etc/systemd/system/oled.service > /dev/null <<EOL
+    if systemctl list-unit-files | grep -q 'oled.service'; then
+        log_message "success" "OLED Display Service already exists. Reloading and restarting..."
+        systemctl daemon-reload
+        systemctl restart oled.service
+    else
+        # Create the systemd service file
+        tee /etc/systemd/system/oled.service > /dev/null <<EOL
 [Unit]
 Description=Quadify OLED Display Service
 After=volumio.service
@@ -158,89 +355,117 @@ User=volumio
 WantedBy=multi-user.target
 EOL
 
-    # Enable the OLED service to start on boot
-    systemctl enable oled >> "$LOG_FILE" 2>&1
+        # Reload systemd to apply the new service
+        systemctl daemon-reload
 
-    # Start the OLED service
-    systemctl start oled >> "$LOG_FILE" 2>&1
+        # Enable the OLED service to start on boot
+        systemctl enable oled.service >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
 
-    log_message "${GREEN}OLED Display Service has been created, enabled, and started.${NC}"
+        # Start the OLED service
+        systemctl start oled.service >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        spinner $pid
+        wait $pid
+
+        log_message "success" "OLED Display Service has been created, enabled, and started."
+    fi
 }
 
-# Function to configure SPI settings
-configure_spi() {
-    log_message "${YELLOW}Configuring SPI settings...${NC}"
-    
-    # Enable spi-dev and spi in userconfig.txt
-    echo "spi-dev" | tee -a /etc/modules > /dev/null
-    echo "dtparam=spi=on" | tee -a /boot/userconfig.txt > /dev/null
-
-    # Check for SPI buffer size and set if necessary
-    if [ ! -f "/etc/modprobe.d/spidev.conf" ] || ! grep -q 'bufsiz=8192' /etc/modprobe.d/spidev.conf; then
-        echo "options spidev bufsiz=8192" | tee -a /etc/modprobe.d/spidev.conf > /dev/null
-    fi
-
-    # Reboot to apply SPI settings
-    log_message "${YELLOW}Rebooting to apply SPI settings...${NC}"
+# ============================
+#   Reboot System Function
+# ============================
+reboot_system() {
+    log_message "info" "Rebooting the system to apply SPI and I2C settings..."
     reboot
 }
 
-# Function to verify the presence of spi_binding
-verify_spi_binding() {
-    log_message "${YELLOW}Verifying the presence of spi_binding module...${NC}"
-    if [ -f "/home/volumio/Quadify/oled/node_modules/pi-spi/build/Release/spi_binding.node" ]; then
-        log_message "${GREEN}spi_binding module found successfully.${NC}"
-    else
-        log_message "${RED}spi_binding module is missing. Attempting to rebuild pi-spi...${NC}"
-        cd /home/volumio/Quadify/oled
-        npm rebuild pi-spi >> "$LOG_FILE" 2>&1
-        
-        if [ -f "/home/volumio/Quadify/oled/node_modules/pi-spi/build/Release/spi_binding.node" ]; then
-            log_message "${GREEN}spi_binding module rebuilt successfully.${NC}"
-        else
-            log_message "${RED}Failed to rebuild spi_binding module. Please check the logs for details.${NC}"
-            exit 1
-        fi
+# ============================
+#   Handle Post-Reboot Steps
+# ============================
+handle_post_reboot() {
+    log_message "info" "Continuing with installation after reboot..."
+    
+    # Setup OLED and Startup Indicator services
+    setup_oled_service
+    setup_startup_indicator_service
+    
+    # Verify spi_binding module
+    verify_spi_binding
+    
+    # Verify I2C devices
+    verify_i2c
+    
+    log_message "success" "The Quadify Dac is set. Happy Listening!!"
+    log_message "info" "Installation concluded at $(date +"%T"). Enjoy the music!"
+}
+
+# ============================
+#   Check for Post-Reboot Flag
+# ============================
+check_post_reboot() {
+    if [ -f "/home/volumio/Quadify/oled/.post_reboot" ]; then
+        handle_post_reboot
+        rm /home/volumio/Quadify/oled/.post_reboot
+        exit 0
     fi
 }
 
-# Main Installation Flow
+# ============================
+#   Main Function
+# ============================
+main() {
+    # Display the ASCII Art Banner
+    banner
 
-# Check for root privileges
-check_root
+    # Check for root privileges
+    check_root
 
-# Start the installation with flair
-log_message "${GREEN}Quadify's audiophile installation is tuning up...${NC}"
+    # Check if post-reboot steps need to be handled
+    check_post_reboot
 
-# Install build essentials and set up compilers
-install_build_essentials
+    log_message "info" "Quadify's audiophile installation is tuning up..."
 
-# Install Node.js and npm
-install_node_and_npm
+    # Install build essentials
+    install_build_essentials
 
-# Alternatively, if you prefer using nvm, uncomment the following lines:
-# install_nvm_and_node
+    # Install Node.js and npm
+    install_node_and_npm
 
-# Installation steps for Volumio dependencies
-install_dep_volumio
+    # Install project dependencies
+    install_dependencies
 
-# Navigate to project directory
-cd /home/volumio/Quadify/oled
+    # Configure SPI
+    configure_spi
 
-# Install Node.js dependencies
-install_dependencies
+    # Configure I2C
+    configure_i2c
 
-# Configure SPI settings (reboot required)
-configure_spi
+    # Verify I2C devices
+    verify_i2c
 
-# After reboot, you need to run the remaining steps manually or automate the script to continue post-reboot.
+    # Verify spi_binding module
+    verify_spi_binding
 
-# Setup OLED and Startup Indicator services
-setup_oled_service
-setup_startup_indicator_service
+    # Setup systemd services
+    setup_startup_indicator_service
+    setup_oled_service
 
-# Verify spi_binding module
-verify_spi_binding
+    # Final success message
+    log_message "success" "The Quadify Dac is set. Happy Listening!!"
+    log_message "info" "Installation concluded at $(date +"%T"). Enjoy the music!"
 
-log_message "${GREEN}The Quadify Dac is set. Happy Listening!!${NC}"
-log_message "Installation began at $(date -d @$start_time +%T) and concluded at $(date +"%T"). Enjoy the music!"
+    # Prompt for reboot
+    if prompt_user "Do you want to reboot now to apply all changes?"; then
+        # Create a flag file to handle post-reboot steps
+        touch /home/volumio/Quadify/oled/.post_reboot
+        reboot_system
+    else
+        log_message "warning" "Reboot skipped. Please reboot manually later to apply changes."
+    fi
+}
+
+# Execute the main function
+main

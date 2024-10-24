@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/bin/bash
+set -e
 
 # Color codes
 RED='\033[0;31m'
@@ -12,50 +13,98 @@ LOG_FILE="install_details.log"
 # Function to log messages
 log_message() {
     local message=$1
-    echo -e "$message" | tee -a $LOG_FILE
+    echo -e "$message" | tee -a "$LOG_FILE"
 }
 
-# Function to install Node.js and npm with an audiophile twist
+# Function to check if the script is run as root
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        log_message "${YELLOW}Please run as root or use sudo.${NC}"
+        exit 1
+    fi
+}
+
+# Function to install build essentials and set up compilers
+install_build_essentials() {
+    log_message "${YELLOW}Installing build essentials and setting up compilers...${NC}"
+    
+    # Run the updated build script
+    bash Workaround_BuildEssentials.sh >> "$LOG_FILE" 2>&1
+    
+    log_message "${GREEN}Build essentials installed and compilers set to gcc-8/g++-8.${NC}"
+}
+
+# Function to install Node.js and npm using NodeSource
 install_node_and_npm() {
-    log_message "${YELLOW}Tuning in to Node.js and npm frequencies...${NC}"
+    log_message "${YELLOW}Installing Node.js and npm...${NC}"
     if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-        log_message "${GREEN}Node.js and npm are already in harmony.${NC}"
+        log_message "${GREEN}Node.js and npm are already installed.${NC}"
     else
-        log_message "${YELLOW}Node.js or npm not found. Setting up the system...${NC}"
-        sudo apt-get update
-        sudo apt-get install -y nodejs npm
-        # Encore: Check again after installation
+        # Add NodeSource repository for the latest Node.js
+        curl -fsSL https://deb.nodesource.com/setup_14.x | bash - >> "$LOG_FILE" 2>&1
+        apt-get install -y nodejs >> "$LOG_FILE" 2>&1
+        
+        # Verify installation
         if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-            log_message "${GREEN}Node.js and npm have tuned in perfectly.${NC}"
-            log_message "${YELLOW}Initializing package setup...${NC}"
-            npm init -y
+            log_message "${GREEN}Node.js and npm installed successfully.${NC}"
         else
-            log_message "${RED}Encore failed. Node.js and npm are out of tune. Check your package manager or install manually.${NC}"
+            log_message "${RED}Failed to install Node.js and npm.${NC}"
             exit 1
         fi
     fi
 }
 
-# Function to install dependencies for Volumio with a touch of audiophile elegance
+# Function to install dependencies for Volumio with audiophile elegance
 install_dep_volumio() {
-    if apt-get -qq install build-essential > /dev/null 2>&1; then
-        log_message "${GREEN}Essential building blocks are in place, like a solid music collection.${NC}"
+    log_message "${YELLOW}Installing dependencies for Volumio...${NC}"
+    if apt-get install -y build-essential raspberrypi-kernel-headers libffi-dev libssl-dev >/dev/null 2>&1; then
+        log_message "${GREEN}Essential Volumio dependencies installed successfully.${NC}"
     else
-        log_message "${YELLOW}Missing some tunes in your collection, attempting a rare find workaround...${NC}"
-        if bash Workaround_BuildEssentials.sh > /dev/null 2>> $LOG_FILE; then
-            log_message "${GREEN}...Success! Your Dac is almost complete.${NC}"
+        log_message "${YELLOW}Failed to install some dependencies. Attempting workaround...${NC}"
+        if bash Workaround_BuildEssentials.sh >> "$LOG_FILE" 2>&1; then
+            log_message "${GREEN}Workaround executed successfully.${NC}"
         else
-            log_message "${RED}...No luck, the tunes remain elusive. The OLED display can't be installed without it.${NC}"
+            log_message "${RED}Workaround failed. Cannot proceed.${NC}"
             exit 1
         fi
     fi
 }
 
-# Function to create and enable the startup indicator service
+# Function to install Node.js dependencies using package.json
+install_dependencies() {
+    log_message "${YELLOW}Installing Node.js dependencies from package.json...${NC}"
+    
+    # Ensure package.json exists
+    if [ ! -f package.json ]; then
+        log_message "${YELLOW}No package.json found. Initializing a new one...${NC}"
+        npm init -y >> "$LOG_FILE" 2>&1
+    fi
+    
+    # Clean npm cache to prevent corrupted installations
+    npm cache clean --force >> "$LOG_FILE" 2>&1
+    
+    # Remove existing node_modules and package-lock.json for a clean install
+    rm -rf node_modules package-lock.json
+    
+    # Install dependencies
+    npm install >> "$LOG_FILE" 2>&1
+    
+    # Optionally, update all packages to their latest versions
+    log_message "${YELLOW}Updating all Node.js modules to their latest versions...${NC}"
+    npm update >> "$LOG_FILE" 2>&1
+}
+
+# Function to create and enable the Startup Indicator LED Service
 setup_startup_indicator_service() {
     log_message "${YELLOW}Setting up the Startup Indicator LED Service...${NC}"
-    # Create the systemd service file
-    sudo tee /etc/systemd/system/startup-indicator.service > /dev/null <<EOL
+    
+    if systemctl list-unit-files | grep -q 'startup-indicator.service'; then
+        log_message "${GREEN}Startup Indicator LED Service already exists. Reloading and restarting...${NC}"
+        systemctl daemon-reload
+        systemctl restart startup-indicator.service
+    else
+        # Create the systemd service file
+        tee /etc/systemd/system/startup-indicator.service > /dev/null <<EOL
 [Unit]
 Description=Startup Indicator LED Service
 After=network.target
@@ -74,68 +123,124 @@ StandardError=journal
 WantedBy=multi-user.target
 EOL
 
-    # Reload systemd to apply the new service
-    sudo systemctl daemon-reload
+        # Reload systemd to apply the new service
+        systemctl daemon-reload
 
-    # Enable the service to start on boot
-    sudo systemctl enable startup-indicator.service
+        # Enable the service to start on boot
+        systemctl enable startup-indicator.service
 
-    # Start the service
-    sudo systemctl start startup-indicator.service
+        # Start the service
+        systemctl start startup-indicator.service
 
-    log_message "${GREEN}Startup Indicator LED Service has been created, enabled, and started.${NC}"
+        log_message "${GREEN}Startup Indicator LED Service has been created, enabled, and started.${NC}"
+    fi
 }
 
-# -------------------------------------------------------------------
-# Function to install the remote script
-# Commented out to remove remote installation
-# -------------------------------------------------------------------
-# install_remote_script() {
-#     log_message "${YELLOW}Running the remote install script...${NC}"
-#     if [ -f "$(pwd)/../remote/install.sh" ]; then
-#         (cd ../remote && bash install.sh >> $LOG_FILE 2>> $LOG_FILE)
-#         log_message "${GREEN}Remote install script executed successfully.${NC}"
-#     else
-#         log_message "${RED}Remote install script not found!${NC}"
-#         exit 1
-#     fi
-# }
+# Function to set up the OLED service
+setup_oled_service() {
+    log_message "${YELLOW}Setting up the OLED Display Service...${NC}"
+    
+    # Create the systemd service file
+    tee /etc/systemd/system/oled.service > /dev/null <<EOL
+[Unit]
+Description=Quadify OLED Display Service
+After=volumio.service
 
-# Start the installation with a bit of flair
+[Service]
+WorkingDirectory=/home/volumio/Quadify/oled/
+ExecStart=/usr/bin/node /home/volumio/Quadify/oled/index.js
+ExecStop=/usr/bin/node /home/volumio/Quadify/oled/off.js
+StandardOutput=null
+Type=simple
+User=volumio
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    # Enable the OLED service to start on boot
+    systemctl enable oled >> "$LOG_FILE" 2>&1
+
+    # Start the OLED service
+    systemctl start oled >> "$LOG_FILE" 2>&1
+
+    log_message "${GREEN}OLED Display Service has been created, enabled, and started.${NC}"
+}
+
+# Function to configure SPI settings
+configure_spi() {
+    log_message "${YELLOW}Configuring SPI settings...${NC}"
+    
+    # Enable spi-dev and spi in userconfig.txt
+    echo "spi-dev" | tee -a /etc/modules > /dev/null
+    echo "dtparam=spi=on" | tee -a /boot/userconfig.txt > /dev/null
+
+    # Check for SPI buffer size and set if necessary
+    if [ ! -f "/etc/modprobe.d/spidev.conf" ] || ! grep -q 'bufsiz=8192' /etc/modprobe.d/spidev.conf; then
+        echo "options spidev bufsiz=8192" | tee -a /etc/modprobe.d/spidev.conf > /dev/null
+    fi
+
+    # Reboot to apply SPI settings
+    log_message "${YELLOW}Rebooting to apply SPI settings...${NC}"
+    reboot
+}
+
+# Function to verify the presence of spi_binding
+verify_spi_binding() {
+    log_message "${YELLOW}Verifying the presence of spi_binding module...${NC}"
+    if [ -f "/home/volumio/Quadify/oled/node_modules/pi-spi/build/Release/spi_binding.node" ]; then
+        log_message "${GREEN}spi_binding module found successfully.${NC}"
+    else
+        log_message "${RED}spi_binding module is missing. Attempting to rebuild pi-spi...${NC}"
+        cd /home/volumio/Quadify/oled
+        npm rebuild pi-spi >> "$LOG_FILE" 2>&1
+        
+        if [ -f "/home/volumio/Quadify/oled/node_modules/pi-spi/build/Release/spi_binding.node" ]; then
+            log_message "${GREEN}spi_binding module rebuilt successfully.${NC}"
+        else
+            log_message "${RED}Failed to rebuild spi_binding module. Please check the logs for details.${NC}"
+            exit 1
+        fi
+    fi
+}
+
+# Main Installation Flow
+
+# Check for root privileges
+check_root
+
+# Start the installation with flair
 log_message "${GREEN}Quadify's audiophile installation is tuning up...${NC}"
+
+# Install build essentials and set up compilers
+install_build_essentials
+
+# Install Node.js and npm
 install_node_and_npm
 
-# Installation steps for Volumio
-start_time="$(date +"%T")"
-log_message "* Setting up the stage for Quadify OLED on Volumio"
+# Alternatively, if you prefer using nvm, uncomment the following lines:
+# install_nvm_and_node
+
+# Installation steps for Volumio dependencies
 install_dep_volumio
-npm install async i2c-bus pi-spi onoff date-and-time socket.io-client@2.1.1 spi-device >> $LOG_FILE 2>> $LOG_FILE
 
-# Setting up the stage for SPI interfacing, like fine-tuning your turntable
-echo "spi-dev" | sudo tee -a /etc/modules > /dev/null
-echo "dtparam=spi=on" | sudo tee -a /boot/userconfig.txt > /dev/null
+# Navigate to project directory
+cd /home/volumio/Quadify/oled
 
-# Check for SPI buffer size like checking for the right pressure on your vinyl
-if [ ! -f "/etc/modprobe.d/spidev.conf" ] || ! grep -q 'bufsiz=8192' /etc/modprobe.d/spidev.conf; then
-    echo "options spidev bufsiz=8192" | sudo tee -a /etc/modprobe.d/spidev.conf > /dev/null
-fi
+# Install Node.js dependencies
+install_dependencies
 
-# Setting up the OLED service, like setting up your amplifier
-printf "[Unit]\nDescription=Quadify OLED Display Service\nAfter=volumio.service\n[Service]\nWorkingDirectory=%s\nExecStart=/usr/bin/node %s/index.js\nExecStop=/usr/bin/node %s/off.js\nStandardOutput=null\nType=simple\nUser=volumio\n[Install]\nWantedBy=multi-user.target" "$PWD" "$PWD" "$PWD" | sudo tee /etc/systemd/system/oled.service > /dev/null
-sudo systemctl enable oled > /dev/null 2>> $LOG_FILE
+# Configure SPI settings (reboot required)
+configure_spi
 
-# Restart the OLED service, like dropping the needle on a fresh record
-sudo systemctl restart oled
+# After reboot, you need to run the remaining steps manually or automate the script to continue post-reboot.
 
-# Set up the Startup Indicator LED Service
+# Setup OLED and Startup Indicator services
+setup_oled_service
 setup_startup_indicator_service
 
-# -------------------------------------------------------------------
-# Install the remote script
-# Commented out to remove remote installation
-# -------------------------------------------------------------------
-# install_remote_script
+# Verify spi_binding module
+verify_spi_binding
 
-log_message "${GREEN}The Quadify Dac is set, Happy Listening!!${NC}"
-
-log_message "Installation began at $start_time and concluded at $(date +"%T"). Enjoy the music!"
+log_message "${GREEN}The Quadify Dac is set. Happy Listening!!${NC}"
+log_message "Installation began at $(date -d @$start_time +%T) and concluded at $(date +"%T"). Enjoy the music!"

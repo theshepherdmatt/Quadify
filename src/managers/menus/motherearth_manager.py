@@ -1,4 +1,5 @@
 from managers.base_manager import BaseManager
+from utils.menu_renderer import render_list_menu
 import logging
 from PIL import ImageFont
 import threading
@@ -245,19 +246,17 @@ class MotherEarthManager(BaseManager):
     def display_menu(self):
         """Display the current station menu on the OLED."""
         self.logger.info("MotherEarthManager: Displaying station menu.")
-        visible_items = self.get_visible_window(self.current_menu_items)
-        self.logger.debug(f"MotherEarthManager: {len(visible_items)} items visible in current window.")
-        def draw_callback(draw_obj):
-            for i, item in enumerate(visible_items):
-                actual_index = self.window_start_index + i
-                arrow = "-> " if actual_index == self.current_selection_index else "   "
-                title = item.get("title", "Untitled")
-                font = self.font_bold if actual_index == self.current_selection_index else self.font
-                fill = "white" if actual_index == self.current_selection_index else "gray"
-                y = self.y_offset + i * self.line_spacing
-                draw_obj.text((10, y), f"{arrow}{title}", font=font, fill=fill)
-                self.logger.debug(f"MotherEarthManager: Drawn item '{title}' at y={y} with arrow='{arrow.strip()}'")
-        self.display_manager.draw_custom(draw_callback)
+        self.window_start_index = render_list_menu(
+            display_manager=self.display_manager,
+            title=self.mode_name.capitalize() if hasattr(self, "mode_name") else "MotherEarth",
+            items=self.current_menu_items,
+            current_selection_index=self.current_selection_index,
+            window_start_index=self.window_start_index,
+            window_size=self.window_size,
+            y_offset=self.y_offset,
+            line_spacing=self.line_spacing,
+            font_key=self.font_key,
+        )
 
     def display_no_stations_message(self):
         """Display a message when no stations are available."""

@@ -11,7 +11,6 @@ from urllib.parse import quote
 from urllib3.util.retry import Retry
 from PIL import Image, ImageDraw, ImageFont
 from managers.base_manager import BaseManager  # Adjust import based on your project structure
-from utils.menu_renderer import render_list_menu
 
 class InternalManager(BaseManager):
     def __init__(self, display_manager, volumio_config, mode_manager, window_size=3, y_offset=0, line_spacing=16):
@@ -401,17 +400,41 @@ class InternalManager(BaseManager):
             menu_title = self.menu_stack[-1].get("menu_title", menu_title)
 
         self.logger.info(f"InternalManager: Displaying menu: {menu_title}")
-        self.window_start_index = render_list_menu(
-            display_manager=self.display_manager,
-            title=menu_title,
-            items=self.current_menu_items,
-            current_selection_index=self.current_selection_index,
-            window_start_index=self.window_start_index,
-            window_size=self.window_size,
-            y_offset=self.y_offset,
-            line_spacing=self.line_spacing,
-            font_key=self.font_key,
-        )
+
+        visible_items = self.get_visible_window(self.current_menu_items)
+        self.logger.debug(f"InternalManager: Visible items: {visible_items}")
+
+        def draw(draw_obj):
+            y_position = self.y_offset
+
+            # Display the menu title
+            draw_obj.text(
+                (0, y_position),
+                menu_title[:20],  # Ensure the title fits the width
+                font=self.display_manager.fonts.get(self.font_key, ImageFont.load_default()),
+                fill="yellow"
+            )
+            y_position += self.line_spacing
+
+            # Display each menu item
+            for i, item in enumerate(visible_items):
+                actual_index = self.window_start_index + i
+                if actual_index >= len(self.current_menu_items):
+                    break  # Prevent index out of range
+
+                arrow = "-> " if actual_index == self.current_selection_index else "   "
+                item_title = item.get("title", "Unknown")
+                fill_color = "white" if actual_index == self.current_selection_index else "gray"
+
+                # No icon, just display the text
+                draw_obj.text(
+                    (0, y_position + i * self.line_spacing),
+                    f"{arrow}{item_title}",
+                    font=self.display_manager.fonts.get(self.font_key, ImageFont.load_default()),
+                    fill=fill_color
+                )
+
+        self.display_manager.draw_custom(draw)
 
     def push_menu(self, menu_items, menu_title=""):
         """Push a new menu onto the stack and display it."""

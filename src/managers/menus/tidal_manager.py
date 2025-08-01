@@ -1,7 +1,6 @@
 # src/managers/tidal_manager.py
 
 from managers.base_manager import BaseManager
-from utils.menu_renderer import render_list_menu
 import logging
 from PIL import ImageFont
 import threading
@@ -246,17 +245,22 @@ class TidalManager(BaseManager):
     def display_menu(self):
         """Display the current menu."""
         self.logger.info("TidalManager: Displaying menu.")
-        self.window_start_index = render_list_menu(
-            display_manager=self.display_manager,
-            title=self.mode_name.capitalize(),
-            items=self.current_menu_items,
-            current_selection_index=self.current_selection_index,
-            window_start_index=self.window_start_index,
-            window_size=self.window_size,
-            y_offset=self.y_offset,
-            line_spacing=self.line_spacing,
-            font_key=self.font_key,
-        )
+        visible_items = self.get_visible_window(self.current_menu_items)
+
+        def draw(draw_obj):
+            for i, item in enumerate(visible_items):
+                actual_index = self.window_start_index + i
+                arrow = "-> " if actual_index == self.current_selection_index else "   "
+                title = item['title']
+                self.logger.debug(f"TidalManager: Drawing item {i}: {title}")
+                draw_obj.text(
+                    (10, self.y_offset + i * self.line_spacing),
+                    f"{arrow}{title}",
+                    font=self.display_manager.fonts.get(self.font_key, ImageFont.load_default()),
+                    fill="white" if actual_index == self.current_selection_index else "gray"
+                )
+
+        self.display_manager.draw_custom(draw)
 
     def scroll_selection(self, direction):
         """Scroll through the menu items."""

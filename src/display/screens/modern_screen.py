@@ -189,19 +189,41 @@ class ModernScreen(BaseManager):
     # --------------------------- Spectrum FIFO ---------------------------
 
     def _read_fifo(self):
-        if not os.path.exists(FIFO_PATH):
-            self.logger.error("ModernScreen: FIFO %s not found.", FIFO_PATH)
-            return
+        """
+        Continuously read spectrum data from FIFO.
+        Auto-reconnects if FIFO disappears (e.g. cava restarted).
+        """
+        fifo_path = FIFO_PATH
+        retry_delay = 1.0  # seconds between retries
 
-        try:
-            with open(FIFO_PATH, "r") as fifo:
-                while self.running_spectrum:
-                    line = fifo.readline().strip()
-                    if line:
-                        bars = [int(x) for x in line.split(";") if x.isdigit()]
-                        self.spectrum_bars = bars
-        except Exception as e:  # noqa: BLE001
-            self.logger.error("ModernScreen: error reading FIFO => %s", e)
+        self.logger.info("ModernScreen: Spectrum thread started, reading %s", fifo_path)
+
+        while self.running_spectrum:
+            if not os.path.exists(fifo_path):
+                self.logger.warning("ModernScreen: FIFO %s not found. Retrying in %.1fs", fifo_path, retry_delay)
+                time.sleep(retry_delay)
+                continue
+
+            try:
+                with open(fifo_path, "r") as fifo:
+                    for line in fifo:
+                        if not self.running_spectrum:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            bars = [int(x) for x in line.split(";") if x.isdigit()]
+                            if bars:
+                                self.spectrum_bars = bars
+                        except Exception as e:
+                            self.logger.error("ModernScreen: Failed to parse FIFO line '%s' -> %s", line, e)
+            except Exception as e:
+                self.logger.error("ModernScreen: FIFO read error: %s. Retrying in %.1fs", e, retry_delay)
+                time.sleep(retry_delay)
+
+        self.logger.info("ModernScreen: Spectrum thread exiting.")
+
 
     # --------------------------- Utilities -------------------------------
 
@@ -456,12 +478,19 @@ class ModernScreen(BaseManager):
         bar_region_height = height // 2
         vertical_offset = -8  # shift spectrum up a tad
 
-        # If spectrum disabled, clear the area and exit
-        if (not self.running_spectrum) or (not self.mode_manager.config.get("cava_enabled", False)):
+        # Case 1: user has disabled spectrum
+        if not self.mode_manager.config.get("cava_enabled", False):
             y_top = max(0, vertical_offset)
             y_bottom = min(height, bar_region_height + vertical_offset)
             draw.rectangle([0, y_top, width, y_bottom], fill="black")
             return
+
+        # Case 2: enabled, but spectrum not running -> restart
+        if not self.running_spectrum:
+            self.logger.warning("ModernScreen: Spectrum enabled but thread not running – restarting.")
+            self.running_spectrum = True
+            self.spectrum_thread = threading.Thread(target=self._read_fifo, daemon=True)
+            self.spectrum_thread.start()
 
         bars = self.spectrum_bars
         n = len(bars)

@@ -100,21 +100,41 @@ class DigitalVUScreen(BaseManager):
             self.logger.error(f"DigitalVUScreen: Failed to start/restart CAVA service: {e}")
 
     def _read_fifo(self):
-        if not os.path.exists(FIFO_PATH):
-            self.logger.error(f"DigitalVUScreen: FIFO {FIFO_PATH} not found.")
-            return
+        """
+        Continuously read spectrum data from FIFO.
+        Auto-reconnects if FIFO disappears (e.g. cava restarted).
+        """
+        fifo_path = FIFO_PATH
+        retry_delay = 1.0  # seconds between retries
 
-        self.logger.debug("DigitalVUScreen: reading from FIFO for spectrum data.")
-        try:
-            with open(FIFO_PATH, "r") as fifo:
-                while self.running_spectrum:
-                    line = fifo.readline().strip()
-                    if line:
-                        bars = [int(x) for x in line.split(";") if x.isdigit()]
-                        if len(bars) == 36:
-                            self.spectrum_bars = bars
-        except Exception as e:
-            self.logger.error(f"DigitalVUScreen: error reading FIFO => {e}")
+        self.logger.info("DigitalVUScreen: Spectrum thread started, reading %s", fifo_path)
+
+        while self.running_spectrum:
+            if not os.path.exists(fifo_path):
+                self.logger.warning("DigitalVUScreen: FIFO %s not found. Retrying in %.1fs", fifo_path, retry_delay)
+                time.sleep(retry_delay)
+                continue
+
+            try:
+                with open(fifo_path, "r") as fifo:
+                    for line in fifo:
+                        if not self.running_spectrum:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            bars = [int(x) for x in line.split(";") if x.isdigit()]
+                            if bars:
+                                self.spectrum_bars = bars
+                        except Exception as e:
+                            self.logger.error("DigitalVUScreen: Failed to parse FIFO line '%s' -> %s", line, e)
+            except Exception as e:
+                self.logger.error("DigitalVUScreen: FIFO read error: %s. Retrying in %.1fs", e, retry_delay)
+                time.sleep(retry_delay)
+
+        self.logger.info("DigitalVUScreen: Spectrum thread exiting.")
+
 
     # ---------------- Volumio State Change Handler ------------------
     def on_volumio_state_change(self, sender, state):
@@ -282,142 +302,128 @@ class DigitalVUScreen(BaseManager):
 
 
     def draw_display(self, data):
-        self.logger.info(f"draw_display: Called with data: {data}")
+        self.logger.info("DigitalVUScreen: draw_display called.")
 
-        bars = self.spectrum_bars
+        # --- Spectrum handling ---
+        if not self.mode_manager.config.get("cava_enabled", False):
+            bars = [0] * 36
+        else:
+            if not self.running_spectrum:
+                self.logger.warning("DigitalVUScreen: Spectrum enabled but thread not running – restarting.")
+                self.running_spectrum = True
+                self.spectrum_thread = threading.Thread(target=self._read_fifo, daemon=True)
+                self.spectrum_thread.start()
+            bars = self.spectrum_bars
+
+        # --- Calculate left/right levels ---
         left = right = 0
         if bars and len(bars) == 36:
             left = sum(bars[:18]) // 18
             right = sum(bars[18:]) // 18
         else:
-            self.logger.warning(f"draw_display: Not enough spectrum bars (got {len(bars) if bars else 0})")
+            self.logger.warning("DigitalVUScreen: Not enough spectrum bars (got %s)", len(bars) if bars else 0)
 
-        self.logger.debug(f"draw_display: Calculated VU levels: left={left}, right={right}")
+        self.logger.debug("DigitalVUScreen: Calculated VU levels: left=%s, right=%s", left, right)
 
+        # --- Frame setup ---
         try:
             frame = self.vu_bg.copy()
         except Exception as e:
-            self.logger.error(f"draw_display: Failed to copy background: {e}")
+            self.logger.error("DigitalVUScreen: Failed to copy background: %s", e)
             frame = Image.new("RGBA", self.display_manager.oled.size, "black")
 
         draw = ImageDraw.Draw(frame)
-        width, height = self.display_manager.oled.size
+        screen_width, screen_height = self.display_manager.oled.size
 
-        # --- Draw wide track progress bar above VU bars ---
+        # --- Progress bar + time labels ---
         seek_ms = data.get("seek", 0)
-        duration_s = data.get("duration", 1)
-        seek_s = max(0, seek_ms / 1000)
+        duration_s = max(1, int(data.get("duration", 1)))
+        seek_s = max(0, seek_ms / 1000.0)
         progress = max(0.0, min(seek_s / duration_s, 1.0))
 
-        cur_min = int(seek_s // 60)
-        cur_sec = int(seek_s % 60)
-        tot_min = int(duration_s // 60)
-        tot_sec = int(duration_s % 60)
+        cur_min, cur_sec = divmod(int(seek_s), 60)
+        tot_min, tot_sec = divmod(duration_s, 60)
         current_time = f"{cur_min}:{cur_sec:02d}"
         total_duration = f"{tot_min}:{tot_sec:02d}"
 
-        screen_width, _ = self.display_manager.oled.size
         progress_margin = 2
         progress_width = screen_width - (progress_margin * 2)
         progress_x = progress_margin
-        time_y = 20
-        progress_y = 34
+        time_y, progress_y = 20, 34
 
-        # Time labels
         draw.text((2, time_y), current_time, font=self.font_artist, fill="white")
         dur_w, _ = draw.textsize(total_duration, font=self.font_artist)
         draw.text((screen_width - dur_w - 2, time_y), total_duration, font=self.font_artist, fill="white")
 
-        # Progress bar
         draw.line([progress_x, progress_y, progress_x + progress_width, progress_y], fill="white", width=1)
         indicator_x = progress_x + int(progress_width * progress)
         draw.line([indicator_x, progress_y - 2, indicator_x, progress_y + 2], fill="white", width=1)
 
-        # --- Draw horizontal bar VU meters at the bottom ---
-        num_cells = 64
-        cell_w = 2
-        cell_h = 5
-        cell_spacing = 7
-        left_row_y = 41
-        right_row_y = 57
-        row_x0 = 22
+        # --- Horizontal bar VU meters with peak hold ---
+        num_cells, cell_w, cell_h, cell_spacing = 64, 2, 5, 7
+        left_row_y, right_row_y, row_x0 = 41, 57, 22
+        left_cells = int((left / 255.0) * num_cells)
+        right_cells = int((right / 255.0) * num_cells)
 
-        left_cells = int((left / 255) * num_cells)
-        right_cells = int((right / 255) * num_cells)
-
-        # --- PEAK TRACKING LOGIC ---
         now = time.time()
+
         # Left peak
         if left_cells > self.left_peak_cell or now - self.left_peak_time > (self.peak_hold_ms / 1000):
+            self.left_peak_cell, self.left_peak_time = left_cells, now
+        elif left_cells < self.left_peak_cell and now - self.left_peak_time > (self.peak_hold_ms / 1000):
             self.left_peak_cell = left_cells
-            self.left_peak_time = now
-        elif left_cells < self.left_peak_cell:
-            if now - self.left_peak_time > (self.peak_hold_ms / 1000):
-                self.left_peak_cell = left_cells
 
         # Right peak
         if right_cells > self.right_peak_cell or now - self.right_peak_time > (self.peak_hold_ms / 1000):
+            self.right_peak_cell, self.right_peak_time = right_cells, now
+        elif right_cells < self.right_peak_cell and now - self.right_peak_time > (self.peak_hold_ms / 1000):
             self.right_peak_cell = right_cells
-            self.right_peak_time = now
-        elif right_cells < self.right_peak_cell:
-            if now - self.right_peak_time > (self.peak_hold_ms / 1000):
-                self.right_peak_cell = right_cells
 
-        # Draw VU bars
         for i in range(left_cells):
             x = row_x0 + i * cell_spacing
-            y = left_row_y
-            draw.rectangle([(x, y), (x + cell_w, y + cell_h)], fill="white")
+            draw.rectangle([(x, left_row_y), (x + cell_w, left_row_y + cell_h)], fill="white")
         for i in range(right_cells):
             x = row_x0 + i * cell_spacing
-            y = right_row_y
-            draw.rectangle([(x, y), (x + cell_w, y + cell_h)], fill="white")
+            draw.rectangle([(x, right_row_y), (x + cell_w, right_row_y + cell_h)], fill="white")
 
-        # Draw LEFT peak marker (red rectangle)
         if self.left_peak_cell > 0:
             peak_x = row_x0 + (self.left_peak_cell - 1) * cell_spacing
-            peak_y = left_row_y
-            draw.rectangle([(peak_x, peak_y), (peak_x + cell_w, peak_y + cell_h)], fill="white")
-        # Draw RIGHT peak marker (red rectangle)
+            draw.rectangle([(peak_x, left_row_y), (peak_x + cell_w, left_row_y + cell_h)], fill="white")
         if self.right_peak_cell > 0:
             peak_x = row_x0 + (self.right_peak_cell - 1) * cell_spacing
-            peak_y = right_row_y
-            draw.rectangle([(peak_x, peak_y), (peak_x + cell_w, peak_y + cell_h)], fill="white")
+            draw.rectangle([(peak_x, right_row_y), (peak_x + cell_w, right_row_y + cell_h)], fill="white")
 
-        self.logger.debug("draw_display: Horizontal VU bars and peak markers drawn.")
+        self.logger.debug("DigitalVUScreen: Horizontal VU bars + peak markers drawn.")
 
-        # --- Draw artist/title/info lines ---
+        # --- Artist/title/info lines ---
         try:
             title = data.get("title", "Unknown Title")
             artist = data.get("artist", "Unknown Artist")
-            max_length = 40
             combined = f"{artist} - {title}"
-            if len(combined) > max_length:
-                combined = combined[:max_length - 3] + "..."
+            if len(combined) > 40:
+                combined = combined[:37] + "..."
 
             text_w, text_h = draw.textsize(combined, font=self.font)
-            text_y = -4
-            draw.text(((width - text_w) // 2, text_y), combined, font=self.font, fill="white")
+            draw.text(((screen_width - text_w) // 2, -4), combined, font=self.font, fill="white")
 
             samplerate = data.get("samplerate", "N/A")
             bitdepth = data.get("bitdepth", "N/A")
             volume = data.get("volume", "N/A")
             info_text = f"Vol: {volume} / {samplerate} / {bitdepth}"
             info_w, info_h = draw.textsize(info_text, font=self.font_artist)
-            info_y = text_y + text_h + 1
-            draw.text(((width - info_w) // 2, info_y), info_text, font=self.font_artist, fill="white")
+            draw.text(((screen_width - info_w) // 2, text_h - 3), info_text, font=self.font_artist, fill="white")
 
-            self.logger.debug("draw_display: Artist/title, info line, and icon drawn.")
+            self.logger.debug("DigitalVUScreen: Artist/title and info line drawn.")
         except Exception as e:
-            self.logger.error(f"draw_display: Error rendering text: {e}")
+            self.logger.error("DigitalVUScreen: Error rendering text: %s", e)
 
+        # --- Push to OLED ---
         try:
             frame = frame.convert(self.display_manager.oled.mode)
             self.display_manager.oled.display(frame)
-            self.logger.info("draw_display: Frame sent to display.")
+            self.logger.info("DigitalVUScreen: Frame sent to display.")
         except Exception as e:
-            self.logger.error(f"draw_display: Error displaying frame: {e}")
-
+            self.logger.error("DigitalVUScreen: Error displaying frame: %s", e)
 
 
     def display_playback_info(self):

@@ -94,21 +94,41 @@ class VUScreen(BaseManager):
             self.logger.error(f"VUScreen: Failed to start/restart CAVA service: {e}")
 
     def _read_fifo(self):
-        if not os.path.exists(FIFO_PATH):
-            self.logger.error(f"VUScreen: FIFO {FIFO_PATH} not found.")
-            return
+        """
+        Continuously read spectrum data from FIFO.
+        Auto-reconnects if FIFO disappears (e.g. cava restarted).
+        """
+        fifo_path = FIFO_PATH
+        retry_delay = 1.0  # seconds between retries
 
-        self.logger.debug("VUScreen: reading from FIFO for spectrum data.")
-        try:
-            with open(FIFO_PATH, "r") as fifo:
-                while self.running_spectrum:
-                    line = fifo.readline().strip()
-                    if line:
-                        bars = [int(x) for x in line.split(";") if x.isdigit()]
-                        if len(bars) == 36:
-                            self.spectrum_bars = bars
-        except Exception as e:
-            self.logger.error(f"VUScreen: error reading FIFO => {e}")
+        self.logger.info("VUScreen: Spectrum thread started, reading %s", fifo_path)
+
+        while self.running_spectrum:
+            if not os.path.exists(fifo_path):
+                self.logger.warning("VUScreen: FIFO %s not found. Retrying in %.1fs", fifo_path, retry_delay)
+                time.sleep(retry_delay)
+                continue
+
+            try:
+                with open(fifo_path, "r") as fifo:
+                    for line in fifo:
+                        if not self.running_spectrum:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            bars = [int(x) for x in line.split(";") if x.isdigit()]
+                            if bars:
+                                self.spectrum_bars = bars
+                        except Exception as e:
+                            self.logger.error("VUScreen: Failed to parse FIFO line '%s' -> %s", line, e)
+            except Exception as e:
+                self.logger.error("VUScreen: FIFO read error: %s. Retrying in %.1fs", e, retry_delay)
+                time.sleep(retry_delay)
+
+        self.logger.info("VUScreen: Spectrum thread exiting.")
+
 
     # ---------------- Volumio State Change Handler ------------------
     def on_volumio_state_change(self, sender, state):
@@ -255,7 +275,19 @@ class VUScreen(BaseManager):
     def draw_display(self, data):
         self.logger.info(f"draw_display: Called with data: {data}")
 
-        bars = self.spectrum_bars
+        # --- Spectrum safety / auto-restart ---
+        if not self.mode_manager.config.get("cava_enabled", False):
+            # User disabled spectrum → idle needles
+            bars = [0] * 36
+        else:
+            if not self.running_spectrum:
+                self.logger.warning("VUScreen: Spectrum enabled but thread not running – restarting.")
+                self.running_spectrum = True
+                self.spectrum_thread = threading.Thread(target=self._read_fifo, daemon=True)
+                self.spectrum_thread.start()
+            bars = self.spectrum_bars
+
+        # --- Calculate levels ---
         left = right = 0
         if bars and len(bars) == 36:
             left = sum(bars[:18]) // 18
@@ -265,6 +297,7 @@ class VUScreen(BaseManager):
 
         self.logger.debug(f"draw_display: Calculated VU levels: left={left}, right={right}")
 
+        # --- Frame base (background) ---
         try:
             frame = self.vu_bg.copy()
         except Exception as e:
@@ -274,7 +307,7 @@ class VUScreen(BaseManager):
         draw = ImageDraw.Draw(frame)
         width, height = self.display_manager.oled.size
 
-        # Draw VU needles
+        # --- Needles ---
         try:
             self.draw_needle(draw, self.left_centre, self.level_to_angle(left), self.needle_length, "white")
             self.draw_needle(draw, self.right_centre, self.level_to_angle(right), self.needle_length, "white")
@@ -282,8 +315,9 @@ class VUScreen(BaseManager):
         except Exception as e:
             self.logger.error(f"draw_display: Error drawing needles: {e}")
 
+        # --- Text overlays ---
         try:
-            # Artist - Title line with truncation
+            # Artist - Title line (truncate if too long)
             title = data.get("title", "Unknown Title")
             artist = data.get("artist", "Unknown Artist")
             max_length = 45
@@ -304,17 +338,17 @@ class VUScreen(BaseManager):
             info_y = text_y + text_h + 1
             draw.text(((width - info_w) // 2, info_y), info_text, font=self.font_artist, fill="white")
 
-            self.logger.debug("draw_display: Artist/title, info line, and icon drawn.")
+            self.logger.debug("draw_display: Artist/title and info line drawn.")
         except Exception as e:
             self.logger.error(f"draw_display: Error rendering text: {e}")
 
+        # --- Final display ---
         try:
             frame = frame.convert(self.display_manager.oled.mode)
             self.display_manager.oled.display(frame)
             self.logger.info("draw_display: Frame sent to display.")
         except Exception as e:
             self.logger.error(f"draw_display: Error displaying frame: {e}")
-
 
 
     def display_playback_info(self):

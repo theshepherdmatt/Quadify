@@ -828,61 +828,43 @@ class ModeManager:
     def _handle_playback_states(self, status, service, state_data, skip_pause_stop_timer=False):
         now = time.time()
         desired_mode = self.config.get("display_mode", "original")
+        current_mode = self.get_mode()
 
         # Skip rapid mode switches
         if (now - self.last_mode_change_time) < self.min_mode_switch_interval:
             self.logger.debug("ModeManager: Skipping a rapid mode switch due to cooldown.")
             return
 
-        # For AirPlay, simply ignore state changes so we remain in clock mode.
+        # Ignore AirPlay services (stay in clock)
         if service in ["airplay", "airplay_emulation"]:
             self.logger.debug("AirPlay service detected; ignoring state update and remaining in clock mode.")
             return
 
-        # Normal handling for non-AirPlay services:
         if status == "play":
-            current_mode = self.get_mode()
-            if service in ["webradio"]:
-                if current_mode != "webradio":
-                    self.to_webradio()
-                    self.last_mode_change_time = now
-                else:
-                    self.logger.debug("Already in 'webradio' mode; no transition needed.")
+            # Decide target mode
+            if service == "webradio":
+                target_mode = "webradio"
+            elif desired_mode in ("modern", "minimal", "vuscreen", "digitalvuscreen"):
+                target_mode = desired_mode
             else:
-                # Only one display mode should be activated
-                if desired_mode == "modern":
-                    if current_mode != "modern":
-                        self.to_modern()
-                        self.last_mode_change_time = now
-                    else:
-                        self.logger.debug("Already in 'modern' mode; no transition needed.")
-                elif desired_mode == "minimal":
-                    if current_mode != "minimal":
-                        self.to_minimal()
-                        self.last_mode_change_time = now
-                    else:
-                        self.logger.debug("Already in 'minimal' mode; no transition needed.")
-                elif desired_mode == "vuscreen":
-                    if current_mode != "vuscreen":
-                        self.to_vuscreen()
-                        self.last_mode_change_time = now
-                    else:
-                        self.logger.debug("Already in 'vuscreen' mode; no transition needed.")
-                elif desired_mode == "digitalvuscreen":
-                    if current_mode != "digitalvuscreen":
-                        self.to_digitalvuscreen()
-                        self.last_mode_change_time = now
-                    else:
-                        self.logger.debug("Already in 'digitalvuscreen' mode; no transition needed.")
-                else:
-                    # Default to original
-                    if current_mode != "original":
-                        self.to_original()
-                        self.last_mode_change_time = now
-                    else:
-                        self.logger.debug("Already in 'original' mode; no transition needed.")
+                target_mode = "original"
+
+            # Guard against redundant transitions
+            if current_mode == target_mode:
+                self.logger.debug("ModeManager: Already in '%s' mode; no transition needed.", target_mode)
+                return
+
+            # Perform transition
+            transition_method = getattr(self, f"to_{target_mode}", None)
+            if callable(transition_method):
+                transition_method()
+                self.last_mode_change_time = now
+                self.logger.info("ModeManager: Switched to %s mode.", target_mode)
+            else:
+                self.logger.error("ModeManager: No transition method for target_mode='%s'", target_mode)
 
             self.reset_idle_timer()
+
         elif status == "pause":
             if not skip_pause_stop_timer:
                 self._start_pause_timer()

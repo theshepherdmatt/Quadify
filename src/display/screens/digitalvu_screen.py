@@ -4,6 +4,7 @@ import os
 import math
 import time
 import subprocess
+import fcntl
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from managers.menus.base_manager import BaseManager
 
@@ -27,7 +28,7 @@ class DigitalVUScreen(BaseManager):
 
         # Font (use display_manager fonts, fallback to default)
         self.font_artist = ImageFont.truetype("/home/volumio/Quadify/src/assets/fonts/OpenSans-Regular.ttf", 10)
-        self.font_title = ImageFont.truetype("/home/volumio/Quadify/src/assets/fonts/OpenSans-Regular.ttf", 12)
+        self.font_title = ImageFont.truetype("/home/volumio/Quadify/src/assets/fonts/OpenSans-Regular.ttf", 14)
         self.font = self.font_title
 
         self.font = self.font_title or ImageFont.load_default()
@@ -99,13 +100,14 @@ class DigitalVUScreen(BaseManager):
         except Exception as e:
             self.logger.error(f"DigitalVUScreen: Failed to start/restart CAVA service: {e}")
 
+
     def _read_fifo(self):
         """
         Continuously read spectrum data from FIFO.
-        Auto-reconnects if FIFO disappears (e.g. cava restarted).
+        Exits quickly when self.running_spectrum = False.
         """
         fifo_path = FIFO_PATH
-        retry_delay = 1.0  # seconds between retries
+        retry_delay = 1.0
 
         self.logger.info("DigitalVUScreen: Spectrum thread started, reading %s", fifo_path)
 
@@ -117,23 +119,35 @@ class DigitalVUScreen(BaseManager):
 
             try:
                 with open(fifo_path, "r") as fifo:
-                    for line in fifo:
-                        if not self.running_spectrum:
-                            break
-                        line = line.strip()
-                        if not line:
+                    # set non-blocking mode
+                    fd = fifo.fileno()
+                    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+                    while self.running_spectrum:
+                        try:
+                            line = fifo.readline().strip()
+                        except BlockingIOError:
+                            time.sleep(0.05)
                             continue
+
+                        if not line:
+                            time.sleep(0.01)
+                            continue
+
                         try:
                             bars = [int(x) for x in line.split(";") if x.isdigit()]
                             if bars:
                                 self.spectrum_bars = bars
                         except Exception as e:
                             self.logger.error("DigitalVUScreen: Failed to parse FIFO line '%s' -> %s", line, e)
+
             except Exception as e:
                 self.logger.error("DigitalVUScreen: FIFO read error: %s. Retrying in %.1fs", e, retry_delay)
                 time.sleep(retry_delay)
 
         self.logger.info("DigitalVUScreen: Spectrum thread exiting.")
+
 
 
     # ---------------- Volumio State Change Handler ------------------
@@ -396,6 +410,7 @@ class DigitalVUScreen(BaseManager):
         self.logger.debug("DigitalVUScreen: Horizontal VU bars + peak markers drawn.")
 
         # --- Artist/title/info lines ---
+        # --- Artist/title/info lines ---
         try:
             title = data.get("title", "Unknown Title")
             artist = data.get("artist", "Unknown Artist")
@@ -403,24 +418,32 @@ class DigitalVUScreen(BaseManager):
             if len(combined) > 40:
                 combined = combined[:37] + "..."
 
+            # Measure text size
             text_w, text_h = draw.textsize(combined, font=self.font)
-            draw.text(((screen_width - text_w) // 2, -4), combined, font=self.font, fill="white")
 
+            # Draw title (centred, shifted down slightly)
+            title_y = -1  # adjust up/down as needed
+            draw.text(((screen_width - text_w) // 2, title_y), combined, font=self.font, fill="white")
+
+            # Info line (volume / samplerate / bitdepth), centre it above progress bar
             samplerate = data.get("samplerate", "N/A")
-            bitdepth = data.get("bitdepth", "N/A")
-            volume = data.get("volume", "N/A")
-            info_text = f"Vol: {volume} / {samplerate} / {bitdepth}"
+            bitdepth   = data.get("bitdepth", "N/A")
+            volume     = data.get("volume", "N/A")
+            info_text  = f"Vol: {volume} / {samplerate} / {bitdepth}"
             info_w, info_h = draw.textsize(info_text, font=self.font_artist)
-            draw.text(((screen_width - info_w) // 2, text_h - 3), info_text, font=self.font_artist, fill="white")
+
+            info_y = progress_y - info_h - 2  # just above progress bar
+            draw.text(((screen_width - info_w) // 2, info_y), info_text, font=self.font_artist, fill="white")
 
             self.logger.debug("DigitalVUScreen: Artist/title and info line drawn.")
         except Exception as e:
             self.logger.error("DigitalVUScreen: Error rendering text: %s", e)
 
+
         # --- Push to OLED ---
         try:
             frame = frame.convert(self.display_manager.oled.mode)
-            self.display_manager.oled.display(frame)
+            self.display_manager.display_pil(frame)
             self.logger.info("DigitalVUScreen: Frame sent to display.")
         except Exception as e:
             self.logger.error("DigitalVUScreen: Error displaying frame: %s", e)

@@ -80,29 +80,43 @@ class OriginalScreen(BaseManager):
     # ------------------------------------------------------------------
     def update_display_loop(self):
         """
-        Repeatedly waits for the update_event or times out. If signaled,
-        draws the updated display if active & mode == 'original'.
+        Background loop for OriginalScreen.
+        Waits for state updates or times out,
+        and simulates seek only while playing.
         """
+        last_update_time = time.time()
         while not self.stop_event.is_set():
             triggered = self.update_event.wait(timeout=0.1)
-            if triggered:
-                with self.state_lock:
-                    state_to_process = self.latest_state
-                    self.latest_state = None
-                self.update_event.clear()
 
-                if self.is_active and self.mode_manager.get_mode() == 'original':
-                    if state_to_process:
-                        if self.mode_manager.is_state_change_suppressed():
-                            self.logger.debug(
-                                "OriginalScreen: State change suppressed during update loop."
-                            )
-                            continue
-                        self.draw_display(state_to_process)
+            with self.state_lock:
+                if triggered and self.latest_state:
+                    state_to_process = self.latest_state.copy()
+                    self.latest_state = None
+                    self.update_event.clear()
+                    last_update_time = time.time()
+                elif self.is_active and self.current_state:
+                    state_to_process = self.current_state.copy()
+                    status = (state_to_process.get("status") or "").lower()
+                    duration_val = state_to_process.get("duration")
+
+                    try:
+                        duration_ok = int(duration_val) > 0
+                    except Exception:
+                        duration_ok = False
+
+                    if status == "play" and duration_ok:
+                        elapsed = time.time() - last_update_time
+                        state_to_process["seek"] = int(state_to_process.get("seek") or 0) + int(elapsed * 1000)
+
+                    last_update_time = time.time()
                 else:
-                    self.logger.debug(
-                        "OriginalScreen: No update => either not active or mode != 'original'."
-                    )
+                    state_to_process = None
+
+            if self.is_active and self.mode_manager.get_mode() == "original" and state_to_process:
+                if not self.mode_manager.is_state_change_suppressed():
+                    self.current_state = state_to_process
+                    self.draw_display(state_to_process)
+
 
     # ------------------------------------------------------------------
     #   Start/Stop Mode
@@ -213,7 +227,7 @@ class OriginalScreen(BaseManager):
         self._draw_more_info(draw, base_image, data, service)
 
         # Finally update display
-        self.display_manager.oled.display(base_image)
+        self.display_manager.display_pil(base_image)
         self.logger.info("OriginalScreen: Display updated.")
 
     def _draw_more_info(self, draw, base_image, data, service):

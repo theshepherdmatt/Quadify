@@ -303,7 +303,7 @@ class WebRadioScreen:
                 base_image.paste(albumart, (art_x, art_y))
 
         # Send the composed image to the OLED display.
-        self.display_manager.oled.display(base_image)
+        self.display_manager.display_pil(base_image)
         self.logger.debug("WebRadioScreen: Display updated with adjusted vertical offsets.")
 
     def toggle_play_pause(self):

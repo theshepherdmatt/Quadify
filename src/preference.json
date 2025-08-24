@@ -8,5 +8,5 @@
   "screensaver_timeout": 3600,
   "oled_brightness": 255,
   "cava_enabled": true,
-  "modern_spectrum_mode": "bars"
+  "modern_spectrum_mode": "dots"
 }

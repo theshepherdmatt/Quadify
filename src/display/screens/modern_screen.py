@@ -145,11 +145,14 @@ class ModernScreen(BaseManager):
         self.reset_scrolling()
         self.spectrum_mode = self.mode_manager.config.get("modern_spectrum_mode", "bars")
 
+        # Clear any stale pixels
+        self.display_manager.clear_screen()
+
         # Force immediate state refresh
         try:
             if self.volumio_listener and self.volumio_listener.socketIO:
                 self.volumio_listener.socketIO.emit("getState", {})
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self.logger.warning("ModernScreen: Failed to emit 'getState'. Error => %s", e)
 
         # Start spectrum thread
@@ -164,6 +167,7 @@ class ModernScreen(BaseManager):
             self.stop_event.clear()
             self.update_thread = threading.Thread(target=self.update_display_loop, daemon=True)
             self.update_thread.start()
+
 
     def stop_mode(self):
         if not self.is_active:
@@ -194,7 +198,7 @@ class ModernScreen(BaseManager):
         Auto-reconnects if FIFO disappears (e.g. cava restarted).
         """
         fifo_path = FIFO_PATH
-        retry_delay = 1.0  # seconds between retries
+        retry_delay = 1.0
 
         self.logger.info("ModernScreen: Spectrum thread started, reading %s", fifo_path)
 
@@ -223,6 +227,7 @@ class ModernScreen(BaseManager):
                 time.sleep(retry_delay)
 
         self.logger.info("ModernScreen: Spectrum thread exiting.")
+
 
 
     # --------------------------- Utilities -------------------------------
@@ -468,24 +473,23 @@ class ModernScreen(BaseManager):
             base_image.paste(service_icon, (icon_x, icon_y))
 
         # Present
-        self.display_manager.oled.display(base_image)
+        self.display_manager.display_pil(base_image)
 
     # --------------------------- Spectrum drawing ------------------------
 
     def _draw_spectrum(self, draw: ImageDraw.ImageDraw):
         width, height = self.display_manager.oled.size
-
         bar_region_height = height // 2
-        vertical_offset = -8  # shift spectrum up a tad
+        vertical_offset = -8
 
-        # Case 1: user has disabled spectrum
+        # Case 1: user disabled spectrum
         if not self.mode_manager.config.get("cava_enabled", False):
             y_top = max(0, vertical_offset)
             y_bottom = min(height, bar_region_height + vertical_offset)
             draw.rectangle([0, y_top, width, y_bottom], fill="black")
             return
 
-        # Case 2: enabled, but spectrum not running -> restart
+        # Case 2: enabled, but not running
         if not self.running_spectrum:
             self.logger.warning("ModernScreen: Spectrum enabled but thread not running – restarting.")
             self.running_spectrum = True

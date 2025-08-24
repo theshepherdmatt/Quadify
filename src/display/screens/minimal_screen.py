@@ -72,24 +72,34 @@ class MinimalScreen(BaseManager):
     # ------------------------------------------------------------------
     def update_display_loop(self):
         """
-        Runs in the background, waits on update_event or times out,
-        and simulates progress update so the duration circle refreshes.
+        Background loop for MinimalScreen.
+        Waits on update_event or times out,
+        and simulates progress updates only while playing.
         """
         while not self.stop_event.is_set():
             triggered = self.update_event.wait(timeout=0.1)
+
             with self.state_lock:
                 if triggered and self.latest_state:
                     self.current_state = self.latest_state.copy()
                     self.latest_state = None
                     self.last_update_time = time.time()
                     self.update_event.clear()
-                elif self.current_state and "seek" in self.current_state and "duration" in self.current_state:
-                    # Simulate progress based on elapsed time
+
+                elif (
+                    self.current_state
+                    and self.current_state.get("status") == "play"
+                    and "seek" in self.current_state
+                    and "duration" in self.current_state
+                ):
+                    # Simulate progress only while actively playing
                     elapsed = time.time() - self.last_update_time
                     self.current_state["seek"] = self.current_state.get("seek", 0) + int(elapsed * 1000)
                     self.last_update_time = time.time()
-            if self.is_active and self.mode_manager.get_mode() == 'minimal' and self.current_state:
+
+            if self.is_active and self.mode_manager.get_mode() == "minimal" and self.current_state:
                 self.draw_display(self.current_state)
+
 
     # ------------------------------------------------------------------
     #   Start / Stop
@@ -103,6 +113,7 @@ class MinimalScreen(BaseManager):
             return
 
         self.is_active = True
+        self.display_manager.clear_screen()
 
         # Force immediate getState (optional) so we’re not waiting on pushState
         try:
@@ -275,7 +286,7 @@ class MinimalScreen(BaseManager):
         # ------------------------------------------------------------------
         # 6) Display the final image
         # ------------------------------------------------------------------
-        self.display_manager.oled.display(base_image)
+        self.display_manager.display_pil(base_image)
         self.logger.debug("MinimalScreen: Display updated with minimal UI including updated progress indicator.")
 
     def display_playback_info(self):

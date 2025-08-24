@@ -952,41 +952,24 @@ class ModeManager:
         self.logger.debug("toggle_play_pause: Current mode after toggling: %s", self.get_mode())
 
     def back(self):
-        if self.mode_stack:
-            previous_mode = self.mode_stack.pop()
-            self.logger.info("ModeManager: Going back to previous mode '%s'.", previous_mode)
-            mapping = {
-                "clock": self.to_clock,
-                "screensaver": self.to_screensaver,
-                "screensavermenu": self.to_screensavermenu,
-                "displaymenu": self.to_displaymenu,
-                "clockmenu": self.to_clockmenu,
-                "configmenu": self.to_configmenu,
-                "original": self.to_original,
-                "modern": self.to_modern,
-                "minimal": self.to_minimal,
-                "vuscreen": self.to_vuscreen,
-                "digitalvuscreen": self.to_digitalvuscreen,
-                "radio": self.to_radio,
-                "menu": self.to_menu,
-                "playlists": self.to_playlists,
-                "library": self.to_library,
-                "streaming": self.to_streaming,
-                "webradio": self.to_webradio,
-                "airplay": self.to_airplay,
-                "motherearthradio": self.to_motherearthradio,
-                "radioparadise": self.to_radioparadise,
-                "systemupdate": self.to_systemupdate,
-                "boot": self.to_boot
-            }
-            if previous_mode in mapping:
-                mapping[previous_mode]()
-            else:
-                self.logger.warning("No back mapping for '%s'. Defaulting to main menu.", previous_mode)
-                self.to_menu()
+        current_mode = self.get_mode()
+
+        if current_mode in ["library", "configmenu", "playlists", "webradio",
+                            "motherearthradio", "radioparadise", "albums",
+                            "artists", "genres", "favourites", "last100", "mediaservers", "streaming"]:
+            # Any sub-menu -> go to main menu
+            self.to_menu()
+
+        elif current_mode == "menu":
+            # In main menu -> go to clock
+            self.to_clock()
+
+        elif current_mode == "clock":
+            # Already at clock -> do nothing (or log)
+            self.logger.info("Back pressed in clock mode; staying on clock.")
+
         else:
-            # Instead of doing nothing, always go to the main menu!
-            self.logger.info("Navigation stack empty, returning to main menu.")
+            # Fallback: always go to menu
             self.to_menu()
 
     def get_mode(self):
